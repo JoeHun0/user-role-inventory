@@ -127,6 +127,11 @@ echo "portability"
 if ! (cd "$HERE/.." && grep -nE '(fromdateiso8601|fromdate|strptime|mktime|strftime|todate|dateadd)\b' user-role-inventory.sh user-role-summary.sh | grep -v '^[^:]*:[0-9]*:[[:space:]]*#'); then
   ok "no jq date built-ins (missing in some Windows jq builds)"
 else bad "no jq date built-ins (missing in some Windows jq builds)"; fi
+# variables named after a keyword, or keywords as shorthand object keys
+KWPAT='[$](as|if|then|elif|else|end|and|or|not|def|reduce|foreach|try|catch|label|import|include)\b|[{,][[:space:]]*(as|if|then|elif|else|end|and|or|not|def|reduce|foreach|try|catch|label|import|include)[[:space:]]*[,}]'
+if ! (cd "$HERE/.." && grep -nE "$KWPAT" user-role-inventory.sh user-role-summary.sh | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' | grep -v 'APP_QUERY='); then
+  ok "no jq keywords as variable names or object keys (rejected by jq 1.6)"
+else bad "no jq keywords as variable names or object keys (rejected by jq 1.6)"; fi
 echo
 echo "$pass passed, $fail failed"
 ((fail == 0))
