@@ -95,6 +95,13 @@ line "-u worklist: membership item (user:group)" '"USR-GROUP-MEMBERSHIP:00000000
 line "-u worklist: recent group item (group only)" '"GRP-RECENT-PRIV:00000000-0000-0000-0000-0000000000f1";"MEDIUM"' "$UC"
 if ! bash "$SUM" "$WORK/nonexistent" >/dev/null 2>&1; then ok "rejects a folder without inventory"; else bad "rejects a folder without inventory"; fi
 
+echo "user-role-summary.sh at scale"
+mkdir -p "$WORK/big/raw"
+jq -c 'range(0; 1500) as $i | . + {user: (.user + {id: "\(.user.id)-\($i)", upn: "\($i)-\(.user.upn)"})}' "$WORK/e/raw/model.jsonl" > "$WORK/big/raw/model.jsonl"
+cp "$WORK/e/raw/users.jsonl" "$WORK/big/raw/"; cp "$WORK/e/synced_groups.tsv" "$WORK/big/"
+if bash "$SUM" "$WORK/big" >/dev/null 2>"$WORK/biglog"; then ok "6 000 users: no 'argument list too long'"; else bad "6 000 users: no 'argument list too long'"; cat "$WORK/biglog"; fi
+is "  ... all items written" "$(($(wc -l < "$WORK/big/user-role-worklist.csv") - 1))" 7501
+
 echo "Windows (Git Bash: CRLF output from az and jq, MSYS path rewriting)"
 REAL_JQ=$(type -P jq) PATH="$HERE/mock-windows:$PATH" bash "$SCRIPT" -o "$WORK/win" 2>"$WORK/winlog"
 if grep -q "Bad Request" "$WORK/winlog"; then
