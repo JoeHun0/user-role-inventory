@@ -190,6 +190,10 @@ read -r -d '' JQ_REPORT <<'JQ'
   "",
   "Inventory of \($detected) (user-role-inventory). Counts only.",
   "",
+  ( if $scope.rootAccess == false then
+      "> **Warning: incomplete inventory.** The account that ran it couldn't read the tenant root management group (no Reader role there, or a PIM role that wasn't active), so Azure role assignments cover only the subscriptions it could see. Entra ID data is complete. Re-run with the role active.",
+      ""
+    else empty end ),
   (if $single then "Mode: **single user** (`-u`)." else "Mode: **whole tenant**. Users read: **\($users | length)**, of which synced from on-prem: **\($users | cnt(.synced))**." end),
   "",
   "Users with at least one Entra or Azure role: **\($nu)**.",
@@ -268,7 +272,8 @@ read -r -d '' JQ_REPORT <<'JQ'
    | if length == 0 then "| (none) | |" else .[] | "| \(.[0] | risklabel) | \(length) |" end)
 JQ
 
-ARGS=(--slurpfile m "$DIR/raw/model.jsonl" --slurpfile users "$DIR/raw/users.jsonl"
+SCOPE=$(cat "$DIR/raw/scope.json" 2>/dev/null || echo '{}')   # absent in runs made before it existed
+ARGS=(--slurpfile m "$DIR/raw/model.jsonl" --slurpfile users "$DIR/raw/users.jsonl" --argjson scope "$SCOPE"
       --rawfile sg "$DIR/synced_groups.tsv" --rawfile ug "$UG" --arg detected "$DETECTED")
 # The rows go through a file: as a command-line argument they would hit the OS limit
 # (128 KB per argument on Linux, 32 KB per command line on Windows).

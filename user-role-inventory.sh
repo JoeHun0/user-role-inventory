@@ -83,6 +83,19 @@ mkdir -p "$RAW" || die "cannot create $RAW"
 for f in users groups members owners direct dirdefs assignments roledefs; do
   : > "$RAW/$f.jsonl"
 done
+# Without read access at the tenant root management group (no Reader there, or a PIM role
+# that isn't active), Azure role assignments are silently read only for the subscriptions the
+# account can see. Warn, and record it so the summary can flag an incomplete inventory.
+ROOT_ACCESS=true
+if ! az rest --method GET \
+     --url "https://management.azure.com/providers/Microsoft.Management/managementGroups/$TENANT_ID?api-version=2021-04-01" \
+     -o none --only-show-errors </dev/null >/dev/null 2>&1; then
+  ROOT_ACCESS=false
+  warn "Your account can't read the tenant root management group (no Reader role there, or a PIM role that"
+  warn "isn't active). Azure role assignments will cover only the subscriptions you can see; Entra data is"
+  warn "not affected. For a complete inventory, activate the role, run 'az login' again and re-run."
+fi
+jq -n -c --argjson root "$ROOT_ACCESS" '{rootAccess: $root}' > "$RAW/scope.json"
 
 GRAPH="https://graph.microsoft.com/v1.0"
 ARM="https://management.azure.com"

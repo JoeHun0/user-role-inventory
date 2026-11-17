@@ -65,6 +65,9 @@ J
 
   "rest --method GET"*)
     case "$url" in
+      */providers/Microsoft.Management/managementGroups/$T\?*)
+        if [[ -n "${MOCK_NO_ROOT:-}" ]]; then echo "ERROR: (AuthorizationFailed) simulated" >&2; exit 1; fi
+        echo '{"name":"root"}' ;;
       */roleManagement/directory/roleDefinitions*)
         echo "{\"value\":[{\"id\":\"$GA\",\"displayName\":\"Global Administrator\",\"templateId\":\"$GA\"},{\"id\":\"$APPADM\",\"displayName\":\"Application Administrator\",\"templateId\":\"$APPADM\"}]}" ;;
       */roleManagement/directory/roleAssignments*)

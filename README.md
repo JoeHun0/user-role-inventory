@@ -98,6 +98,9 @@ Notes on the CSV:
   Works on Linux, WSL, macOS with Homebrew `bash`, and Git Bash on Windows.
 - Azure: **Reader** on the tenant root management group. Entra ID: **Global Reader** (or Directory
   Readers).
+  If the account can't read the tenant root management group, for example because a **PIM role isn't active**,
+  the script warns at the start and the summary report says the inventory is incomplete. Activate the role
+  and run `az login` again before you start.
 
 ## Safety
 
