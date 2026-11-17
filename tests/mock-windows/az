@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Simulates the Windows az CLI as seen from Git Bash, on top of tests/mock/az:
+#   * MSYS rewrites arguments that start with "/" into Windows paths, unless
+#     MSYS_NO_PATHCONV=1 is set (Git for Windows behaviour);
+#   * output lines end with CRLF;
+#   * a carriage return or a rewritten path in an argument gives "Bad Request",
+#     like the real Azure APIs do.
+# SPDX-License-Identifier: MIT
+set -o pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+args=()
+for a in "$@"; do
+  [[ "$a" == /* && "${MSYS_NO_PATHCONV:-}" != 1 ]] && a="C:/Program Files/Git$a"
+  if [[ "$a" == *$'\r'* || "$a" == C:/* ]]; then
+    echo "ERROR: Operation returned an invalid status 'Bad Request'" >&2
+    exit 1
+  fi
+  args+=("$a")
+done
+"$here/../mock/az" "${args[@]}" | sed 's/$/\r/'

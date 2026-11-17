@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Simulates jq.exe for Windows: output lines end with CRLF.
+# SPDX-License-Identifier: MIT
+set -o pipefail
+"$REAL_JQ" "$@" | sed 's/$/\r/'

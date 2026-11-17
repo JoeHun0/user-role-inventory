@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Mock of the az CLI for the test suite, with a small fictional tenant:
+#
+#   alice      synced, enabled. Owner on management group mg-platform (direct, in two
+#              sources with different letter case); member of g-app-admins (Entra
+#              Application Administrator), g-onprem-admins (synced group, Contributor
+#              on a subscription) and, nested, g-all-staff (synced, Reader).
+#   bob        cloud-only. Global Administrator (Entra, direct).
+#   carol      synced, DISABLED. Owner on a subscription (direct), member of g-onprem-admins.
+#   dave       synced. Member of g-all-staff; PIM-eligible Contributor on mg-platform.
+#   eve        cloud-only, no roles.
+# SPDX-License-Identifier: MIT
+
+args="$*"
+url=""; prev=""
+for x in "$@"; do [[ "$prev" == "--url" ]] && url="$x"; prev="$x"; done
+[[ -n "${MOCK_CALLS:-}" ]] && printf '%s\n' "$args" >> "$MOCK_CALLS"
+
+T=00000000-0000-0000-0000-0000000000aa
+A=00000000-0000-0000-0000-0000000000a1; B=00000000-0000-0000-0000-0000000000b1
+C=00000000-0000-0000-0000-0000000000c1; D=00000000-0000-0000-0000-0000000000d1
+E=00000000-0000-0000-0000-0000000000e1
+G1=00000000-0000-0000-0000-0000000000f1; G2=00000000-0000-0000-0000-0000000000f2
+G3=00000000-0000-0000-0000-0000000000f3
+SUB=11111111-0000-0000-0000-000000000001
+MG=/providers/Microsoft.Management/managementGroups/mg-platform
+OWNER=8e3af657-a8ff-443c-a75c-2fe8c4bcb635; CONTRIB=b24988ac-6180-42a0-ab88-20f7382dd24c
+READER=acdd72a7-3385-48ef-bd42-f606fba81ae7
+GA=62e90394-69f5-4237-9190-012177145e10; APPADM=9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3
+
+user() { echo "{\"id\":\"$1\",\"displayName\":\"$2\",\"userPrincipalName\":\"$2@contoso.test\",\"accountEnabled\":$3,\"onPremisesSyncEnabled\":$4,\"onPremisesSamAccountName\":$5,\"createdDateTime\":\"2020-01-01T00:00:00Z\",\"userType\":\"Member\"}"; }
+group() { echo "{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$1\",\"displayName\":\"$2\",\"description\":\"$3\",\"createdDateTime\":\"$4\",\"onPremisesSyncEnabled\":$5,\"isAssignableToRole\":$6,\"securityEnabled\":true,\"mailEnabled\":false,\"groupTypes\":$7,\"membershipRule\":null}"; }
+U_A=$(user $A alice true true '"alice"'); U_B=$(user $B bob true null null)
+U_C=$(user $C carol false true '"carol"'); U_D=$(user $D dave true true '"dave"')
+U_E=$(user $E eve true null null)
+G_1=$(group $G1 g-app-admins "app admins" 2026-11-10T08:00:00Z null true '[]')
+G_2=$(group $G2 g-onprem-admins "from AD" 2019-05-01T00:00:00Z true false '[]')
+G_3=$(group $G3 g-all-staff 'all\tstaff' 2018-01-01T00:00:00Z true false '["DynamicMembership"]')
+usr()  { echo "{\"@odata.type\":\"#microsoft.graph.user\",\"id\":\"$1\"}"; }
+
+case "$args" in
+  "extension show"*) exit 0 ;;
+  "account show"*) echo "$T" ;;
+  "account management-group list"*) printf '%s\n' tenant-root mg-platform ;;
+
+  "graph query"*)
+    case "$args" in
+      *roleassignments*) cat <<J
+{"data":[{"id":"/providers/microsoft.management/managementgroups/mg-platform/providers/microsoft.authorization/roleassignments/ra1","principalId":"$A","roleDefinitionId":"$MG/providers/Microsoft.Authorization/roleDefinitions/$OWNER","scope":"$MG"},
+ {"id":"/subscriptions/$SUB/providers/Microsoft.Authorization/roleAssignments/ra2","principalId":"$C","roleDefinitionId":"/subscriptions/$SUB/providers/Microsoft.Authorization/roleDefinitions/$OWNER","scope":"/subscriptions/$SUB"},
+ {"id":"/subscriptions/$SUB/providers/Microsoft.Authorization/roleAssignments/ra3","principalId":"$G2","roleDefinitionId":"/subscriptions/$SUB/providers/Microsoft.Authorization/roleDefinitions/$CONTRIB","scope":"/subscriptions/$SUB"},
+ {"id":"/subscriptions/$SUB/providers/Microsoft.Authorization/roleAssignments/ra4","principalId":"$G3","roleDefinitionId":"/subscriptions/$SUB/providers/Microsoft.Authorization/roleDefinitions/$READER","scope":"/subscriptions/$SUB"}]}
+J
+      ;;
+      *roledefinitions*) echo "{\"data\":[{\"name\":\"$OWNER\",\"roleName\":\"Owner\"},{\"name\":\"$CONTRIB\",\"roleName\":\"Contributor\"},{\"name\":\"$READER\",\"roleName\":\"Reader\"}]}" ;;
+      *resourcecontainers*) echo "{\"data\":[{\"subscriptionId\":\"$SUB\"}]}" ;;
+      *) echo '{"data":[]}' ;;
+    esac ;;
+
+  "role assignment list"*"--scope $MG"*)
+    echo "[{\"id\":\"$MG/providers/Microsoft.Authorization/roleAssignments/RA1\",\"principalId\":\"$A\",\"roleDefinitionId\":\"$MG/providers/Microsoft.Authorization/roleDefinitions/$OWNER\",\"scope\":\"$MG\"}]" ;;
+  "role assignment list"*"--scope /"\ *) echo "ERROR: no elevated access (simulated)" >&2; exit 1 ;;
+  "role assignment list"*) echo '[]' ;;
+  "role definition list"*) echo '[]' ;;
+
+  "rest --method GET"*)
+    case "$url" in
+      */roleManagement/directory/roleDefinitions*)
+        echo "{\"value\":[{\"id\":\"$GA\",\"displayName\":\"Global Administrator\",\"templateId\":\"$GA\"},{\"id\":\"$APPADM\",\"displayName\":\"Application Administrator\",\"templateId\":\"$APPADM\"}]}" ;;
+      */roleManagement/directory/roleAssignments*)
+        echo "{\"value\":[{\"id\":\"e1\",\"principalId\":\"$B\",\"roleDefinitionId\":\"$GA\",\"directoryScopeId\":\"/\"},{\"id\":\"e2\",\"principalId\":\"$G1\",\"roleDefinitionId\":\"$APPADM\",\"directoryScopeId\":\"/\"}]}" ;;
+      */users\?*\$skiptoken*) echo "{\"value\":[$U_D,$U_E]}" ;;
+      */users\?*) echo "{\"value\":[$U_A,$U_B,$U_C],\"@odata.nextLink\":\"https://graph.microsoft.com/v1.0/users?\$skiptoken=p2\"}" ;;
+      */groups\?*) echo "{\"value\":[$G_1,$G_2,$G_3]}" ;;
+      */groups/$G1/transitiveMembers*) echo "{\"value\":[$(usr $A)]}" ;;
+      */groups/$G2/transitiveMembers*) echo "{\"value\":[$(usr $C),$(usr $A),{\"@odata.type\":\"#microsoft.graph.servicePrincipal\",\"id\":\"sp1\"}]}" ;;
+      */groups/$G3/transitiveMembers*) echo "{\"value\":[$(usr $A),$(usr $D),{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$G2\"}]}" ;;
+      */users/alice@contoso.test\?*) echo "$U_A" ;;
+      */users/$A/transitiveMemberOf*) echo "{\"value\":[$G_1,$G_2,$G_3,{\"@odata.type\":\"#microsoft.graph.directoryRole\",\"id\":\"dr1\"}]}" ;;
+      */users/$A/memberOf*) echo "{\"value\":[{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$G1\"},{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$G2\"}]}" ;;
+      */groups/$G1/owners*) echo "{\"value\":[{\"@odata.type\":\"#microsoft.graph.user\",\"id\":\"$B\",\"userPrincipalName\":\"bob@contoso.test\"}]}" ;;
+      */groups/*/owners*) echo '{"value":[]}' ;;
+      */users/*) echo "Not found (simulated)" >&2; exit 1 ;;
+      *"$MG/providers/Microsoft.Authorization/roleEligibilityScheduleInstances"*)
+        echo "{\"value\":[{\"id\":\"el1\",\"properties\":{\"principalId\":\"$D\",\"principalType\":\"User\",\"roleDefinitionId\":\"$MG/providers/Microsoft.Authorization/roleDefinitions/$CONTRIB\",\"scope\":\"$MG\"}}]}" ;;
+      *roleEligibilityScheduleInstances*) echo '{"value":[]}' ;;
+      *) echo "mock: unexpected GET $url" >&2; exit 1 ;;
+    esac ;;
+  *) echo "mock: unexpected call: $args" >&2; exit 1 ;;
+esac

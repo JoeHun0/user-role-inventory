@@ -1,0 +1,5 @@
+# Inventory results map your tenant's privileged access - never commit them.
+user-role-inventory-*/
+*.tsv
+raw/
+*.jsonl
