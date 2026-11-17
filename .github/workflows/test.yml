@@ -16,3 +16,11 @@ jobs:
         run: bash -n user-role-inventory.sh && bash -n user-role-summary.sh && bash -n tests/run-tests.sh && bash -n tests/mock/az && bash -n tests/mock-windows/az && bash -n tests/mock-windows/jq
       - name: Tests (mock az, no Azure access)
         run: tests/run-tests.sh
+      - name: Tests with jq 1.6 (the version many Windows / Git Bash setups ship)
+        run: |
+          mkdir -p "$RUNNER_TEMP/jq16"
+          curl -fsSL -o "$RUNNER_TEMP/jq16/jq" https://github.com/jqlang/jq/releases/download/jq-1.6/jq-linux64
+          echo "af986793a515d500ab2d35f8d2aecd656e764504b789b66d7e1a0b727a124c44  $RUNNER_TEMP/jq16/jq" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/jq16/jq"
+          PATH="$RUNNER_TEMP/jq16:$PATH" jq --version
+          PATH="$RUNNER_TEMP/jq16:$PATH" tests/run-tests.sh
