@@ -16,6 +16,32 @@ cd user-role-inventory
 ./user-role-inventory.sh -o ~/reports/admins      # output folder
 ```
 
+## Quick start
+
+1. Sign in with the Azure CLI and add the Resource Graph extension (once):
+   ```bash
+   az login
+   az extension add --name resource-graph
+   ```
+2. Run the inventory. It only reads. Expect a few minutes; longer with `-E` (one call per subscription) or many role-holding groups:
+   ```bash
+   ./user-role-inventory.sh      # or: -u someone@example.com for one user
+   ```
+   The results go to a new folder, `./user-role-inventory-YYYYMMDD-HHMM/`.
+3. Turn the results into a report and a worklist:
+   ```bash
+   ./user-role-summary.sh user-role-inventory-YYYYMMDD-HHMM
+   ```
+4. Use the two files it writes into the folder:
+   - **`user-role-report.md`**: counts only, with no names. Paste it into your report or ticket.
+   - **`user-role-worklist.csv`**: one row per thing to fix, with severity, what to do and the details. Load it into
+     Excel (*Data → From Text/CSV*) and assign rows to the people who fix them.
+
+   Everything else in the folder (the `.tsv` files and `raw/`) is the detailed inventory. Keep it private.
+
+On Windows, run the scripts in **Git Bash** or **WSL** with the Azure CLI installed. Run them from a folder
+outside any git repository, so the results can't be committed by accident.
+
 ## Output
 
 Tab-separated files in `./user-role-inventory-YYYYMMDD-HHMM/`. Files are created mode `600`.
@@ -30,6 +56,8 @@ Tab-separated files in `./user-role-inventory-YYYYMMDD-HHMM/`. Files are created
 
 `-u` is meant for looking at one account closely. Groups created recently, groups with owners you
 don't recognise, and role-holding groups the person shouldn't be in stand out at the top.
+
+For a shareable summary and a to-do list, run `user-role-summary.sh` on the folder: see [Report and worklist](#report-and-worklist).
 
 ## Risk rating
 
