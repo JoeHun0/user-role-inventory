@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Mock of the az CLI for the scale test: serves the generated tenant in $MOCK_SCALE_DIR
+# (see tests/run-tests.sh). SPDX-License-Identifier: MIT
+D="${MOCK_SCALE_DIR:?}"
+args="$*"; url=""; prev=""; for x in "$@"; do [[ "$prev" == "--url" ]] && url="$x"; prev="$x"; done
+case "$args" in
+  "extension show"*) exit 0 ;;
+  "account show"*) echo tenant1 ;;
+  "account management-group list"*) echo mg1 ;;
+  "graph query"*) case "$args" in *roleassignments*) cat "$D/rbac.json" ;; *roledefinitions*) cat "$D/roledefs.json" ;; *) echo '{"data":[]}' ;; esac ;;
+  "role assignment list"*) echo '[]' ;;
+  "role definition list"*) echo '[]' ;;
+  rest*) case "$url" in
+      */managementGroups/tenant1\?*) echo '{}' ;;
+      */roleManagement/directory/roleDefinitions*) echo '{"value":[]}' ;;
+      */roleManagement/directory/roleAssignments*) echo '{"value":[]}' ;;
+      */users\?*) cat "$D/users.json" ;;
+      */groups\?*) cat "$D/groups.json" ;;
+      */groups/g0/transitiveMembers*) cat "$D/members-big.json" ;;
+      */groups/*/transitiveMembers*) cat "$D/members-small.json" ;;
+      *) echo '{"value":[]}' ;;
+    esac ;;
+  *) echo "scale mock: unhandled $args" >&2; exit 1 ;;
+esac

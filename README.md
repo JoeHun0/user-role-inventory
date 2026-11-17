@@ -11,7 +11,8 @@ there also gets its cloud roles, and so does anyone who controls a synced group 
 git clone https://github.com/JoeHun0/user-role-inventory.git
 cd user-role-inventory
 ./user-role-inventory.sh                          # whole tenant
-./user-role-inventory.sh -u someone@example.com   # one user and every group they are in
+./user-role-inventory.sh -u someone@example.com   # selected users (-u can be repeated) and every group they are in
+./user-role-inventory.sh -U admins.txt            # the same for a list: one UPN per line, # comments allowed
 ./user-role-inventory.sh -E                       # also PIM-eligible Azure roles
 ./user-role-inventory.sh -o ~/reports/admins      # output folder
 ```
@@ -51,13 +52,19 @@ Tab-separated files in `./user-role-inventory-YYYYMMDD-HHMM/`. Files are created
 | `users.tsv` | One row per user with a role: risk, UPN, synced, enabled, on-prem account name, number of Entra and Azure roles, the HIGH/CRITICAL roles, concerns |
 | `assignments.tsv` | One row per user and role: Entra or Azure, role, active or eligible, level, scope, and how it is held (`direct` or `group: <name>`) |
 | `synced_groups.tsv` | Groups synced from on-prem AD that hold roles, with their roles and number of user members |
-| `user_groups.tsv` | (`-u` only) Every group of the user, **newest first**: direct or nested membership, synced, role-assignable, type, owners, roles the group holds, description |
+| `user_groups.tsv` | (`-u` / `-U` only) One row per selected user and group, **newest first** per user: direct or nested membership, synced, role-assignable, type, owners, roles the group holds, description |
 | `raw/` | The JSON lines the reports are built from |
 
 `-u` is meant for looking at one account closely. Groups created recently, groups with owners you
 don't recognise, and role-holding groups the person shouldn't be in stand out at the top.
 
 For a shareable summary and a to-do list, run `user-role-summary.sh` on the folder: see [Report and worklist](#report-and-worklist).
+
+**Large tenants:** in a whole-tenant run, Reader-level (LOW) roles held through a group stay at group level and
+aren't copied to each member. A group such as "all employees" with Reader on many subscriptions would
+otherwise produce millions of rows. Those groups still appear in `synced_groups.tsv` (if synced), and
+privileged roles held through groups are always listed per member. In `-u` mode everything is listed for
+that user.
 
 ## Risk rating
 

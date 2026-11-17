@@ -79,6 +79,9 @@ J
       */groups/$G2/transitiveMembers*) echo "{\"value\":[$(usr $C),$(usr $A),{\"@odata.type\":\"#microsoft.graph.servicePrincipal\",\"id\":\"sp1\"}]}" ;;
       */groups/$G3/transitiveMembers*) echo "{\"value\":[$(usr $A),$(usr $D),{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$G2\"}]}" ;;
       */users/alice@contoso.test\?*) echo "$U_A" ;;
+      */users/bob@contoso.test\?*) echo "$U_B" ;;
+      */users/$B/transitiveMemberOf*) echo "{\"value\":[$G_1]}" ;;
+      */users/$B/memberOf*) echo "{\"value\":[{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$G1\"}]}" ;;
       */users/$A/transitiveMemberOf*) echo "{\"value\":[$G_1,$G_2,$G_3,{\"@odata.type\":\"#microsoft.graph.directoryRole\",\"id\":\"dr1\"}]}" ;;
       */users/$A/memberOf*) echo "{\"value\":[{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$G1\"},{\"@odata.type\":\"#microsoft.graph.group\",\"id\":\"$G2\"}]}" ;;
       */groups/$G1/owners*) echo "{\"value\":[{\"@odata.type\":\"#microsoft.graph.user\",\"id\":\"$B\",\"userPrincipalName\":\"bob@contoso.test\"}]}" ;;

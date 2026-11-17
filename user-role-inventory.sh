@@ -9,7 +9,10 @@
 #
 # Usage:
 #   ./user-role-inventory.sh               whole tenant
-#   ./user-role-inventory.sh -u <UPN|id>   one user, plus every group they are in
+#   ./user-role-inventory.sh -u <UPN|id>   selected users (-u can be repeated), plus every
+#                                          group they are in
+#   ./user-role-inventory.sh -U <file>     the same for a list of users: one UPN or object
+#                                          ID per line, # comments allowed
 #   ./user-role-inventory.sh -E            also read PIM-eligible Azure roles
 #                                             (one call per subscription and MG)
 #   ./user-role-inventory.sh -o <dir>      output folder
@@ -20,8 +23,8 @@
 #   assignments.tsv    one row per user and role, and how it is held (direct or
 #                      through which group)
 #   synced_groups.tsv  groups synced from on-prem AD that hold roles
-#   user_groups.tsv    (-u only) every group of the user, newest first: direct or
-#                      nested, synced, role-assignable, owners, roles it holds
+#   user_groups.tsv    (-u / -U only) one row per selected user and group, newest first:
+#                      direct or nested, synced, role-assignable, owners, roles it holds
 #   raw/               the JSON lines the reports are built from
 #
 # Only read operations are used (az rest --method GET, az graph query,
@@ -42,12 +45,14 @@ set -uo pipefail
 
 usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; }
 
-TARGET=""
+TARGETS=()
+TFILE=""
 ELIGIBLE=0
 OUTDIR=""
-while getopts ":u:Eo:h" opt; do
+while getopts ":u:U:Eo:h" opt; do
   case "$opt" in
-    u) TARGET="$OPTARG" ;;
+    u) TARGETS+=("$OPTARG") ;;
+    U) TFILE="$OPTARG" ;;
     E) ELIGIBLE=1 ;;
     o) OUTDIR="$OPTARG" ;;
     h) usage; exit 0 ;;
@@ -59,7 +64,18 @@ log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 warn() { printf '[%s] WARNING: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-[[ -z "$TARGET" || "$TARGET" =~ ^[A-Za-z0-9._%+#@-]+$ ]] || die "not a user principal name or object ID: $TARGET"
+if [[ -n "$TFILE" ]]; then   # one UPN or object ID per line; blank lines and # comments ignored
+  [[ -r "$TFILE" ]] || die "cannot read $TFILE"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%%#*}; line=${line//$'\r'/}; line=${line//[[:space:]]/}
+    [[ -n "$line" ]] && TARGETS+=("$line")
+  done < "$TFILE"
+  ((${#TARGETS[@]})) || die "no users in $TFILE"
+fi
+for t in "${TARGETS[@]}"; do
+  [[ "$t" =~ ^[A-Za-z0-9._%+#@-]+$ ]] || die "not a user principal name or object ID: $t"
+done
+TARGET=""; ((${#TARGETS[@]})) && TARGET="selected"   # non-empty: selected-users mode
 
 command -v az >/dev/null || die "az CLI not found"
 command -v jq >/dev/null || die "jq not found (sudo apt install jq)"
@@ -137,19 +153,29 @@ arg_all() {
 
 # ---------------------------------------------------------------- 1. users and groups
 if [[ -n "$TARGET" ]]; then
-  log "Tenant $TENANT_ID - reading user $TARGET and their groups..."
-  az rest --method GET --url "$GRAPH/users/${TARGET//#/%23}?\$select=$USEL" -o json --only-show-errors </dev/null \
-    | jq -c "$USER_PROJ" > "$RAW/users.jsonl" && [[ -s "$RAW/users.jsonl" ]] \
-    || die "user not found or not readable: $TARGET"
-  TID=$(jq -r '.id' "$RAW/users.jsonl")
-  rest_all "$GRAPH/users/$TID/transitiveMemberOf?\$select=$GSEL&\$top=999" \
-    | jq -c "select(.\"@odata.type\" == \"#microsoft.graph.group\") | $GROUP_PROJ" > "$RAW/groups.jsonl" \
-    || warn "group memberships not readable"
-  rest_all "$GRAPH/users/$TID/memberOf?\$select=id&\$top=999" | jq -c '{id}' > "$RAW/direct.jsonl" \
-    || warn "direct group memberships not readable - all groups will show as nested"
-  jq -c --arg u "$TID" '{groupId: .id, memberId: $u}' "$RAW/groups.jsonl" > "$RAW/members.jsonl"
+  log "Tenant $TENANT_ID - reading ${#TARGETS[@]} user(s) and their groups..."
+  : > "$RAW/groups_all.jsonl"
+  for t in "${TARGETS[@]}"; do
+    if ! az rest --method GET --url "$GRAPH/users/${t//#/%23}?\$select=$USEL" -o json --only-show-errors </dev/null \
+         | jq -c "$USER_PROJ" > "$RAW/user.tmp" || [[ ! -s "$RAW/user.tmp" ]]; then
+      warn "user not found or not readable: $t"; continue
+    fi
+    cat "$RAW/user.tmp" >> "$RAW/users.jsonl"
+    TID=$(jq -r '.id' "$RAW/user.tmp")
+    rest_all "$GRAPH/users/$TID/transitiveMemberOf?\$select=$GSEL&\$top=999" \
+      | jq -c "select(.\"@odata.type\" == \"#microsoft.graph.group\") | $GROUP_PROJ" > "$RAW/groups.tmp" \
+      || warn "$t: group memberships not readable"
+    cat "$RAW/groups.tmp" >> "$RAW/groups_all.jsonl"
+    jq -c --arg u "$TID" '{groupId: .id, memberId: $u}' "$RAW/groups.tmp" >> "$RAW/members.jsonl"
+    rest_all "$GRAPH/users/$TID/memberOf?\$select=id&\$top=999" | jq -c --arg u "$TID" '{id, userId: $u}' >> "$RAW/direct.jsonl" \
+      || warn "$t: direct group memberships not readable - its groups will show as nested"
+    log "  $t: $(wc -l < "$RAW/groups.tmp" | tr -d ' ') groups"
+  done
+  rm -f "$RAW/user.tmp" "$RAW/groups.tmp"
+  [[ -s "$RAW/users.jsonl" ]] || die "none of the users could be read"
+  jq -s -c 'unique_by(.id)[]' "$RAW/groups_all.jsonl" > "$RAW/groups.jsonl"   # each group once
   N=$(wc -l < "$RAW/groups.jsonl")
-  log "$N groups. Reading their owners..."
+  log "$N distinct groups. Reading their owners..."
   i=0
   while read -r gid; do
     i=$((i + 1)); ((i % 50 == 0)) && log "  owners: $i/$N"
@@ -243,8 +269,10 @@ fi
 
 # ---------------------------------------------------------------- 5. members of groups that hold roles
 if [[ -z "$TARGET" ]]; then
-  jq -r --slurpfile a "$RAW/assignments.jsonl" \
-    '($a | map(.principalId | ascii_downcase) | unique) as $p | select((.id | ascii_downcase) | IN($p[])) | .id' \
+  # -n with inputs: the lookup table is built once, not once per group
+  jq -n -r --slurpfile a "$RAW/assignments.jsonl" \
+    '($a | map({key: (.principalId | ascii_downcase), value: true}) | from_entries) as $p
+     | inputs | select($p[.id | ascii_downcase]) | .id' \
     "$RAW/groups.jsonl" > "$RAW/rolegroups.txt"
   N=$(wc -l < "$RAW/rolegroups.txt")
   log "Reading members of the $N groups that hold roles..."
@@ -306,8 +334,13 @@ read -r -d '' JQ_MODEL <<'JQ'
 | . + {level: level}
 | . + {rating: rate}
 | (.principalId | lc) as $p
-| if $U[$p] then . + {user: $U[$p], via: "direct", group: null}
-  elif $G[$p] then . as $a | ($M[$p] // [])[] | select($U[.]) | $a + {user: $U[.], via: ("group: " + $G[$p].name), group: $G[$p]}
+| def u: {id, name, upn, enabled, synced, sam};
+  if $U[$p] then . + {user: ($U[$p] | u), via: "direct", group: null}
+  # Reader-level (LOW) roles held through a group stay at group level in the whole-tenant run:
+  # "all employees -> Reader" would otherwise become one row per member and scope (millions)
+  elif $G[$p] and (.rating >= 2 or $expandLow) then
+    . as $a | ($G[$p] | {id, name, synced}) as $g
+    | ($M[$p] // [])[] | select($U[.]) | $a + {user: ($U[.] | u), via: ("group: " + $g.name), group: $g}
   else empty end
 | . + {concern: ([ (if .user.synced then "synced account" else empty end),
                    (if .user.enabled == false then "disabled account" else empty end),
@@ -317,6 +350,7 @@ JQ
 jq -n -c --slurpfile users "$RAW/users.jsonl" --slurpfile groups "$RAW/groups.jsonl" \
   --slurpfile members "$RAW/members.jsonl" --slurpfile roledefs "$RAW/roledefs.jsonl" \
   --slurpfile dirdefs "$RAW/dirdefs.jsonl" --slurpfile assign "$RAW/assignments.jsonl" \
+  --argjson expandLow "$([[ -n "$TARGET" ]] && echo true || echo false)" \
   "$JQ_DEFS $JQ_MODEL" > "$RAW/model.jsonl" || die "building the model failed"
 
 {
@@ -369,16 +403,21 @@ JQ
 
 if [[ -n "$TARGET" ]]; then
   {
-    printf 'created\tgroup\tgroupId\tmembership\tsynced\troleAssignable\ttype\towners\trolesHeld\tdescription\n'
+    printf 'user\tcreated\tgroup\tgroupId\tmembership\tsynced\troleAssignable\ttype\towners\trolesHeld\tdescription\n'
     jq -n -r --slurpfile groups "$RAW/groups.jsonl" --slurpfile members "$RAW/members.jsonl" \
+      --slurpfile users "$RAW/users.jsonl" \
       --slurpfile roledefs "$RAW/roledefs.jsonl" --slurpfile dirdefs "$RAW/dirdefs.jsonl" \
       --slurpfile assign "$RAW/assignments.jsonl" --slurpfile direct "$RAW/direct.jsonl" \
       --slurpfile owners "$RAW/owners.jsonl" "$JQ_DEFS $JQ_GROUPROLES"'
-      | ($direct | map(.id | lc)) as $d
+      | ($direct | map({key: "\(.userId // "" | lc)/\(.id | lc)", value: true}) | from_entries) as $d
       | ($owners | group_by(.groupId | lc) | map({key: (.[0].groupId | lc), value: map(.owner) | unique | join(", ")}) | from_entries) as $own
-      | $groups | sort_by(.created // "") | reverse | .[]
-      | [ .created // "", .name, .id,
-          (if (.id | lc | IN($d[])) then "direct" else "nested" end),
+      | ($groups | map({key: (.id | lc), value: .}) | from_entries) as $G
+      | ($users | map({key: (.id | lc), value: .}) | from_entries) as $U
+      | [ $members[] | {u: $U[.memberId | lc], g: $G[.groupId | lc]} | select(.u and .g) ]
+      | sort_by(.u.upn, (.g.created // "")) | reverse | sort_by(.u.upn) | .[]
+      | .u as $u | .g
+      | [ $u.upn, .created // "", .name, .id,
+          (if $d["\($u.id | lc)/\(.id | lc)"] or $d["/\(.id | lc)"] then "direct" else "nested" end),
           (.synced | yn), (.roleAssignable | yn),
           ((if any(.groupTypes[]; . == "Unified") then "Microsoft 365"
             elif .security and .mail then "mail-enabled security"
@@ -399,5 +438,5 @@ jq -r -s 'group_by(.user.id) | map(.[0].user) as $u
 jq -r -s 'map(select(.user.synced and .rating >= 3)) | group_by(.user.id) | length
   | "  synced users with HIGH/CRITICAL roles: \(.)"' "$RAW/model.jsonl" >&2
 log "  synced groups holding roles: $(($(wc -l < "$OUTDIR/synced_groups.tsv") - 1))"
-[[ -n "$TARGET" ]] && log "  groups of $TARGET: $(wc -l < "$RAW/groups.jsonl") (see user_groups.tsv, newest first)"
+[[ -n "$TARGET" ]] && log "  users examined: $(wc -l < "$RAW/users.jsonl" | tr -d ' '), distinct groups: $(wc -l < "$RAW/groups.jsonl" | tr -d ' ') (see user_groups.tsv: one row per user and group, newest first)"
 log "Reports in $OUTDIR (keep them private)."

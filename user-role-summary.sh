@@ -88,6 +88,7 @@ def adminname: test("admin|adm\\b|owner|privileged|security|global|contributor|o
 ($sg | tsv) as $SG
 | ($ug | tsv | map(. + {age: ((now - (.created | ts // now)) / 86400)})) as $UG
 | ($UG | length > 0) as $single
+| ($UG | unique_by(.groupId)) as $UGd
 | $m as $M
 | ($M | group_by(.user.id) | map({u: .[0].user, rating: (map(.rating) | max), rows: .,
                                    priv: (map(select(.rating >= 3) | rlabel) | unique),
@@ -127,31 +128,32 @@ read -r -d '' JQ_ROWS <<'JQ'
           "")
       | . + {kind: "Group", g: {name: $g.group, id: $g.groupId, members: $g.userMembers, roles: $g.roles, synced: "yes"}} ),
     ( if $single then
-        $users[0] as $t
-        | $UG[] | . as $g
-        | ([$M[] | select(.group.id? == $g.groupId) | .rating] | max // 0) as $gr
-        | ( (if .rolesHeld != "" and .roleAssignable != "yes" and .synced != "yes" then
-               item(2; "GRP-NOT-ROLEASSIGNABLE"; "Group holds roles but isn't role-assignable";
-                 "Its owners, Groups Administrators and User Administrators can change its membership. Use a role-assignable group or a restricted management administrative unit, and review its owners.";
-                 "")
-             else empty end),
-            (if .rolesHeld != "" and .age <= 90 then
-               item(2; "GRP-RECENT-PRIV"; "Group created in the last 90 days holds roles";
-                 "Check in the Entra audit log who created the group and who added its members, and confirm it is legitimate.";
-                 "")
-             else empty end),
-            (if (.group | adminname) and .rolesHeld == "" then
-               item(1; "GRP-ADMIN-NO-ROLE"; "Admin-sounding group with no Entra or Azure role found";
-                 "Check whether it grants rights in Defender XDR, Exchange, Purview or Intune. Remove the user's membership if they don't need it.";
-                 "")
-             else empty end),
-            (if $gr >= 3 then
-               item($gr; "USR-GROUP-MEMBERSHIP"; "User gets privileged roles through this group";
-                 "Confirm the user still needs this membership and remove it if not." + (if .membership == "nested" then " The membership is nested: find the group that brings the user in." else "" end);
-                 "")
-             else empty end)
-          )
-        | . + {kind: "Group", t: $t,
+        ($users | map({key: (.upn // "" | ascii_downcase), value: .}) | from_entries) as $byUpn
+        | ( ($UGd[] | . + {forUser: false}), ($UG[] | . + {forUser: true}) ) | . as $g
+        | ($byUpn[(.user // "") | ascii_downcase] // $users[0]) as $t
+        | ([$M[] | select(.group.id? == $g.groupId and (($g.user // "") == "" or .user.upn == $g.user)) | .rating] | max // 0) as $gr
+        | ( if .forUser | not then
+              (if .rolesHeld != "" and .roleAssignable != "yes" and .synced != "yes" then
+                 item(2; "GRP-NOT-ROLEASSIGNABLE"; "Group holds roles but isn't role-assignable";
+                   "Its owners, Groups Administrators and User Administrators can change its membership. Use a role-assignable group or a restricted management administrative unit, and review its owners.";
+                   "")
+               else empty end),
+              (if .rolesHeld != "" and .age <= 90 then
+                 item(2; "GRP-RECENT-PRIV"; "Group created in the last 90 days holds roles";
+                   "Check in the Entra audit log who created the group and who added its members, and confirm it is legitimate.";
+                   "")
+               else empty end),
+              (if (.group | adminname) and .rolesHeld == "" then
+                 item(1; "GRP-ADMIN-NO-ROLE"; "Admin-sounding group with no Entra or Azure role found";
+                   "Check whether it grants rights in Defender XDR, Exchange, Purview or Intune. Remove memberships that aren't needed.";
+                   "")
+               else empty end)
+            elif $gr >= 3 then
+              item($gr; "USR-GROUP-MEMBERSHIP"; "User gets privileged roles through this group";
+                "Confirm the user still needs this membership and remove it if not." + (if .membership == "nested" then " The membership is nested: find the group that brings the user in." else "" end);
+                "")
+            else empty end )
+        | . + {kind: "Group", t: (if $g.forUser then $t else null end),
                g: {name: $g.group, id: $g.groupId, members: "", roles: $g.rolesHeld, synced: $g.synced,
                    membership: $g.membership, assignable: $g.roleAssignable, type: $g.type, owners: $g.owners,
                    created: $g.created}}
@@ -194,9 +196,12 @@ read -r -d '' JQ_REPORT <<'JQ'
       "> **Warning: incomplete inventory.** The account that ran it couldn't read the tenant root management group (no Reader role there, or a PIM role that wasn't active), so Azure role assignments cover only the subscriptions it could see. Entra ID data is complete. Re-run with the role active.",
       ""
     else empty end ),
-  (if $single then "Mode: **single user** (`-u`)." else "Mode: **whole tenant**. Users read: **\($users | length)**, of which synced from on-prem: **\($users | cnt(.synced))**." end),
+  (if $single then "Mode: **selected users** (`-u` / `-U`): **\($users | length)** examined." else "Mode: **whole tenant**. Users read: **\($users | length)**, of which synced from on-prem: **\($users | cnt(.synced))**." end),
   "",
   "Users with at least one Entra or Azure role: **\($nu)**.",
+  (if $single then empty else
+     "", "Reader-level (LOW) roles held through a group are counted per group, not per member: an \"all employees → Reader\" group would otherwise add every employee here. Privileged roles held through groups are counted per member."
+   end),
   "",
   "## Users by risk",
   "",
@@ -250,19 +255,29 @@ read -r -d '' JQ_REPORT <<'JQ'
     else empty end ),
   ( if $single then
       "",
-      "## Groups of the user",
+      "## Groups of the selected users",
       "",
-      "- Groups: **\($UG | length)** (direct: \($UG | cnt(.membership == "direct")), nested: \($UG | cnt(.membership == "nested")))",
-      "- Synced from on-prem: **\($UG | cnt(.synced == "yes"))**; role-assignable: **\($UG | cnt(.roleAssignable == "yes"))**",
-      "- Holding Entra or Azure roles: **\($UG | cnt(.rolesHeld != ""))**",
-      "- Holding roles but **not** role-assignable (owners, Groups Administrators and User Administrators can change membership): **\($UG | cnt(.rolesHeld != "" and .roleAssignable != "yes"))**",
-      "- Holding roles **and** synced from on-prem: **\($UG | cnt(.rolesHeld != "" and .synced == "yes"))**",
-      "- With owners: **\($UG | cnt(.owners != ""))**",
-      "- Admin-sounding name but no Entra or Azure role found (check workload RBAC: Defender XDR, Exchange, Purview, Intune): **\($UG | cnt((.group | adminname) and .rolesHeld == ""))**",
-      "- Created in the last 30 days: **\($UG | cnt(.age <= 30))**, 90 days: **\($UG | cnt(.age <= 90))**, 365 days: **\($UG | cnt(.age <= 365))**",
+      "Distinct groups (a group shared by several selected users is counted once):",
+      "",
+      "- Groups: **\($UGd | length)**; memberships: \($UG | length) (direct: \($UG | cnt(.membership == "direct")), nested: \($UG | cnt(.membership == "nested")))",
+      "- Synced from on-prem: **\($UGd | cnt(.synced == "yes"))**; role-assignable: **\($UGd | cnt(.roleAssignable == "yes"))**",
+      "- Holding Entra or Azure roles: **\($UGd | cnt(.rolesHeld != ""))**",
+      "- Holding roles but **not** role-assignable (owners, Groups Administrators and User Administrators can change membership): **\($UGd | cnt(.rolesHeld != "" and .roleAssignable != "yes"))**",
+      "- Holding roles **and** synced from on-prem: **\($UGd | cnt(.rolesHeld != "" and .synced == "yes"))**",
+      "- With owners: **\($UGd | cnt(.owners != ""))**",
+      "- Admin-sounding name but no Entra or Azure role found (check workload RBAC: Defender XDR, Exchange, Purview, Intune): **\($UGd | cnt((.group | adminname) and .rolesHeld == ""))**",
+      "- Created in the last 30 days: **\($UGd | cnt(.age <= 30))**, 90 days: **\($UGd | cnt(.age <= 90))**, 365 days: **\($UGd | cnt(.age <= 365))**",
       "",
       "| Group type | Groups |", "|---|---|",
-      ($UG | group_by(.type)[] | "| \(.[0].type) | \(length) |")
+      ($UGd | group_by(.type)[] | "| \(.[0].type) | \(length) |"),
+      "",
+      "Per user (numbered, most groups first; names are in user_groups.tsv):",
+      "",
+      "| User | Groups | Direct | Holding roles | Roles through non-role-assignable groups | Admin-sounding, no role found | Created in the last 30 days |",
+      "|---|---|---|---|---|---|---|",
+      ( $UG | group_by(.user // "") | sort_by(-length) | to_entries[]
+        | .key as $i | .value
+        | "| user \($i + 1) | \(length) | \(cnt(.membership == "direct")) | \(cnt(.rolesHeld != "")) | \(cnt(.rolesHeld != "" and .roleAssignable != "yes")) | \(cnt((.group | adminname) and .rolesHeld == "")) | \(cnt(.age <= 30)) |" )
     else empty end ),
   "",
   "## Worklist",
