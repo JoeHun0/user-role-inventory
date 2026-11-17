@@ -13,6 +13,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Syntax check
-        run: bash -n user-role-inventory.sh && bash -n tests/run-tests.sh && bash -n tests/mock/az && bash -n tests/mock-windows/az && bash -n tests/mock-windows/jq
+        run: bash -n user-role-inventory.sh && bash -n user-role-summary.sh && bash -n tests/run-tests.sh && bash -n tests/mock/az && bash -n tests/mock-windows/az && bash -n tests/mock-windows/jq
       - name: Tests (mock az, no Azure access)
         run: tests/run-tests.sh

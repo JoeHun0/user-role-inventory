@@ -63,6 +63,27 @@ bash "$SCRIPT" -E -o "$WORK/e" 2>/dev/null
 is "eligible MG Contributor -> CRITICAL"                "$(col "$WORK/e/users.tsv" name dave risk)" CRITICAL
 is "  ... marked eligible"                              "$(col "$WORK/e/users.tsv" name dave privilegedRoles)" "Contributor @ managementGroup (eligible)"
 
+echo "user-role-summary.sh"
+SUM="$HERE/../user-role-summary.sh"
+line() { if grep -qF -- "$2" "$3"; then ok "$1"; else bad "$1"; fi; }
+bash "$SUM" "$WORK/e" > "$WORK/sum.md" 2>"$WORK/sumlog" && ok "summary exits 0" || { bad "summary exits 0"; cat "$WORK/sumlog"; }
+line "users read"                 "Users read: **5**, of which synced from on-prem: **3**." "$WORK/sum.md"
+line "risk table"                 "| CRITICAL | 3 | 2 | 1 | 0 |" "$WORK/sum.md"
+line "disabled with roles"        "Disabled accounts that still hold roles: **1**; with HIGH or CRITICAL roles: **1**" "$WORK/sum.md"
+line "held through synced group"  "| through a synced group | 2 | 2 | 0 |" "$WORK/sum.md"
+line "eligible counted"           "| direct | 4 | 3 | 1 |" "$WORK/sum.md"
+line "top roles"                  "| Contributor @ subscription [Azure] | 2 | 2 |" "$WORK/sum.md"
+line "concentration"              "| 2-5 | 2 | 2 |" "$WORK/sum.md"
+if ! grep -qE "contoso|alice|carol|g-onprem|11111111" "$WORK/sum.md"; then ok "no names without -n"; else bad "no names without -n"; fi
+bash "$SUM" -n "$WORK/e" > "$WORK/sumn.md" 2>/dev/null
+line "-n lists users"             "| HIGH | carol@contoso.test | yes | no |" "$WORK/sumn.md"
+bash "$SUM" "$U" > "$WORK/sumu.md" 2>/dev/null
+line "-u: groups"                 "Groups: **3** (direct: 2, nested: 1)" "$WORK/sumu.md"
+line "-u: roles on non-role-assignable groups" "not** role-assignable (owners, Groups Administrators and User Administrators can change membership): **2**" "$WORK/sumu.md"
+line "-u: group types"            "| security (dynamic) | 1 |" "$WORK/sumu.md"
+if ! grep -qE "contoso|alice|g-app" "$WORK/sumu.md"; then ok "-u: no names without -n"; else bad "-u: no names without -n"; fi
+if ! bash "$SUM" "$WORK/nonexistent" >/dev/null 2>&1; then ok "rejects a folder without inventory"; else bad "rejects a folder without inventory"; fi
+
 echo "Windows (Git Bash: CRLF output from az and jq, MSYS path rewriting)"
 REAL_JQ=$(type -P jq) PATH="$HERE/mock-windows:$PATH" bash "$SCRIPT" -o "$WORK/win" 2>"$WORK/winlog"
 if grep -q "Bad Request" "$WORK/winlog"; then

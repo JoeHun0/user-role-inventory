@@ -42,6 +42,33 @@ A heuristic to sort by, not a verdict.
 | **MEDIUM** | Global Reader | Those roles below subscription scope, or any other non-reader role |
 | **LOW** | Other reader roles | Reader roles |
 
+## Summary for reports
+
+`user-role-summary.sh` turns an output folder into a short Markdown summary. It needs only `jq`, no
+Azure access:
+
+```bash
+./user-role-summary.sh user-role-inventory-20261117-0930      # counts only
+./user-role-summary.sh -n user-role-inventory-20261117-0930   # plus users and groups by name
+```
+
+It shows:
+- users per risk level, split into synced, cloud-only and disabled
+- synced and disabled accounts with HIGH or CRITICAL roles
+- how privileged access is held: direct, through a cloud group, or through a synced group (active vs PIM-eligible)
+- the most common privileged roles
+- privilege concentration (how many privileged roles single users collect)
+- synced groups that hold roles
+
+For a `-u` folder it also summarises the user's groups:
+- direct vs nested membership; synced; role-assignable
+- groups holding roles that their owners or Groups Administrators can change
+- admin-sounding groups with no Entra or Azure role found (check workload RBAC)
+- groups created in the last 30, 90 and 365 days
+
+**Without `-n`, the summary contains no user, group or role-scope names**, so it can go into a report
+or ticket. Treat the `-n` version like the inventory itself.
+
 ## Requirements
 
 - Bash 4+, jq 1.6+, Azure CLI with `az login` and `az extension add --name resource-graph`.
