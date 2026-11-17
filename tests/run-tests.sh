@@ -66,22 +66,33 @@ is "  ... marked eligible"                              "$(col "$WORK/e/users.ts
 echo "user-role-summary.sh"
 SUM="$HERE/../user-role-summary.sh"
 line() { if grep -qF -- "$2" "$3"; then ok "$1"; else bad "$1"; fi; }
-bash "$SUM" "$WORK/e" > "$WORK/sum.md" 2>"$WORK/sumlog" && ok "summary exits 0" || { bad "summary exits 0"; cat "$WORK/sumlog"; }
-line "users read"                 "Users read: **5**, of which synced from on-prem: **3**." "$WORK/sum.md"
-line "risk table"                 "| CRITICAL | 3 | 2 | 1 | 0 |" "$WORK/sum.md"
-line "disabled with roles"        "Disabled accounts that still hold roles: **1**; with HIGH or CRITICAL roles: **1**" "$WORK/sum.md"
-line "held through synced group"  "| through a synced group | 2 | 2 | 0 |" "$WORK/sum.md"
-line "eligible counted"           "| direct | 4 | 3 | 1 |" "$WORK/sum.md"
-line "top roles"                  "| Contributor @ subscription [Azure] | 2 | 2 |" "$WORK/sum.md"
-line "concentration"              "| 2-5 | 2 | 2 |" "$WORK/sum.md"
-if ! grep -qE "contoso|alice|carol|g-onprem|11111111" "$WORK/sum.md"; then ok "no names without -n"; else bad "no names without -n"; fi
-bash "$SUM" -n "$WORK/e" > "$WORK/sumn.md" 2>/dev/null
-line "-n lists users"             "| HIGH | carol@contoso.test | yes | no |" "$WORK/sumn.md"
-bash "$SUM" "$U" > "$WORK/sumu.md" 2>/dev/null
-line "-u: groups"                 "Groups: **3** (direct: 2, nested: 1)" "$WORK/sumu.md"
-line "-u: roles on non-role-assignable groups" "not** role-assignable (owners, Groups Administrators and User Administrators can change membership): **2**" "$WORK/sumu.md"
-line "-u: group types"            "| security (dynamic) | 1 |" "$WORK/sumu.md"
-if ! grep -qE "contoso|alice|g-app" "$WORK/sumu.md"; then ok "-u: no names without -n"; else bad "-u: no names without -n"; fi
+bash "$SUM" -o "$WORK/sum" "$WORK/e" 2>"$WORK/sumlog" && ok "summary exits 0" || { bad "summary exits 0"; cat "$WORK/sumlog"; }
+R="$WORK/sum/user-role-report.md"; C="$WORK/sum/user-role-worklist.csv"
+line "report: users read"          "Users read: **5**, of which synced from on-prem: **3**." "$R"
+line "report: risk table"          "| CRITICAL | 3 | 2 | 1 | 0 |" "$R"
+line "report: disabled with roles" "Disabled accounts that still hold roles: **1**; with HIGH or CRITICAL roles: **1**" "$R"
+line "report: synced group path"   "| through a synced group | 2 | 2 | 0 |" "$R"
+line "report: eligible counted"    "| direct | 4 | 3 | 1 |" "$R"
+line "report: top roles"           "| Contributor @ subscription [Azure] | 2 | 2 |" "$R"
+line "report: concentration"       "| 2-5 | 2 | 2 |" "$R"
+line "report: synced groups by risk, highest first" "$(printf '| HIGH | 1 |\n')" "$R"
+line "report: worklist counts"     "| CRITICAL | 2 |" "$R"
+if ! grep -qE "contoso|alice|carol|g-onprem|11111111|0000000000" "$R"; then ok "report: no names or IDs"; else bad "report: no names or IDs"; fi
+if [[ "$(head -c3 "$C" | od -An -tx1 | tr -d ' ')" == efbbbf ]]; then ok "worklist: UTF-8 BOM for Excel"; else bad "worklist: UTF-8 BOM for Excel"; fi
+line "worklist: user and group columns" '"item_id","severity","priority","category","issue","action","kind","user_upn"' "$C"
+is "worklist: 6 items"             "$(($(wc -l < "$C") - 1))" 6
+line "worklist: synced admin"      '"USR-SYNCED-PRIV:00000000-0000-0000-0000-0000000000a1","CRITICAL","1"' "$C"
+line "worklist: disabled user"     '"USR-DISABLED-ROLES:00000000-0000-0000-0000-0000000000c1","HIGH","2"' "$C"
+line "worklist: synced group"      '"GRP-SYNCED-PRIV:00000000-0000-0000-0000-0000000000f2","HIGH","2"' "$C"
+line "worklist: cloud-only CRITICAL review" '"USR-PRIV-REVIEW:00000000-0000-0000-0000-0000000000b1","MEDIUM","3"' "$C"
+bash "$SUM" -s ';' "$U" 2>/dev/null
+UR="$U/user-role-report.md"; UC="$U/user-role-worklist.csv"
+line "-u report: groups"           "Groups: **3** (direct: 2, nested: 1)" "$UR"
+line "-u report: roles on non-role-assignable groups" "not** role-assignable (owners, Groups Administrators and User Administrators can change membership): **2**" "$UR"
+line "-u report: group types"      "| security (dynamic) | 1 |" "$UR"
+if ! grep -qE "contoso|alice|g-app|0000000000" "$UR"; then ok "-u report: no names or IDs"; else bad "-u report: no names or IDs"; fi
+line "-u worklist: membership item (user:group)" '"USR-GROUP-MEMBERSHIP:00000000-0000-0000-0000-0000000000a1:00000000-0000-0000-0000-0000000000f1";"CRITICAL"' "$UC"
+line "-u worklist: recent group item (group only)" '"GRP-RECENT-PRIV:00000000-0000-0000-0000-0000000000f1";"MEDIUM"' "$UC"
 if ! bash "$SUM" "$WORK/nonexistent" >/dev/null 2>&1; then ok "rejects a folder without inventory"; else bad "rejects a folder without inventory"; fi
 
 echo "Windows (Git Bash: CRLF output from az and jq, MSYS path rewriting)"

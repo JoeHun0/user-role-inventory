@@ -42,32 +42,27 @@ A heuristic to sort by, not a verdict.
 | **MEDIUM** | Global Reader | Those roles below subscription scope, or any other non-reader role |
 | **LOW** | Other reader roles | Reader roles |
 
-## Summary for reports
+## Report and worklist
 
-`user-role-summary.sh` turns an output folder into a short Markdown summary. It needs only `jq`, no
-Azure access:
+`user-role-summary.sh` turns an output folder into two files. It needs only `jq`, no Azure access:
 
 ```bash
-./user-role-summary.sh user-role-inventory-20261117-0930      # counts only
-./user-role-summary.sh -n user-role-inventory-20261117-0930   # plus users and groups by name
+./user-role-summary.sh user-role-inventory-20261117-0930             # writes both files into that folder
+./user-role-summary.sh -s ';' user-role-inventory-20261117-0930      # ";" as CSV separator
+./user-role-summary.sh -o ~/reports user-role-inventory-20261117-0930   # writes them somewhere else
 ```
 
-It shows:
-- users per risk level, split into synced, cloud-only and disabled
-- synced and disabled accounts with HIGH or CRITICAL roles
-- how privileged access is held: direct, through a cloud group, or through a synced group (active vs PIM-eligible)
-- the most common privileged roles
-- privilege concentration (how many privileged roles single users collect)
-- synced groups that hold roles
+| File | Contents | Share? |
+|---|---|---|
+| `user-role-report.md` | Counts only: users per risk level, synced and disabled accounts with roles, how privileged access is held, the most common privileged roles, privilege concentration, synced groups with roles; for a `-u` folder also the user's groups by type, age, owners and roles held | Yes. No names, IDs or IP addresses, so it can go into a report or ticket |
+| `user-role-worklist.csv` | One row per thing to fix, with severity, priority (1 = most urgent), category, issue, the action to take, and the details needed to do it: user UPN and name, synced, enabled, on-prem account, privileged roles and how they are held; group name and ID, membership, synced, role-assignable, type, owners, created, roles held | Internal only. Share single rows with the people who fix them |
 
-For a `-u` folder it also summarises the user's groups:
-- direct vs nested membership; synced; role-assignable
-- groups holding roles that their owners or Groups Administrators can change
-- admin-sounding groups with no Entra or Azure role found (check workload RBAC)
-- groups created in the last 30, 90 and 365 days
+Worklist categories: `USR-SYNCED-PRIV` (synced account with privileged roles), `USR-DISABLED-ROLES`, `USR-PRIV-REVIEW`, `USR-MANY-PRIV`, `GRP-SYNCED-PRIV`; from a `-u` folder also `USR-GROUP-MEMBERSHIP`, `GRP-NOT-ROLEASSIGNABLE`, `GRP-RECENT-PRIV`, `GRP-ADMIN-NO-ROLE`.
 
-**Without `-n`, the summary contains no user, group or role-scope names**, so it can go into a report
-or ticket. Treat the `-n` version like the inventory itself.
+Notes on the CSV:
+- **`item_id` (category:object ID; category:userId:groupId for memberships) stays the same between runs.** Use it as the key in a tracking spreadsheet: load the CSV with *Data → From Text/CSV* (Power Query), keep columns like assignee, status and due date in a separate table joined on `item_id`, and refresh after the next run. Fixed items drop out of the CSV.
+- **Encoding:** UTF-8 with a byte-order mark, so Excel shows accented characters correctly. Values that start with `=`, `+`, `-` or `@` get a leading `'`, so names can't run as Excel formulas.
+- **Separator:** `,` by default. Excel with a Hungarian or German locale expects `;` when you open the file by double-clicking, so use `-s ';'` for that.
 
 ## Requirements
 

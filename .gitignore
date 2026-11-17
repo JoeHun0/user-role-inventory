@@ -3,3 +3,5 @@ user-role-inventory-*/
 *.tsv
 raw/
 *.jsonl
+user-role-report.md
+user-role-worklist.csv

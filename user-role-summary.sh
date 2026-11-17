@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
-# user-role-summary.sh - turns a user-role-inventory output folder into a short summary
-# in Markdown: users per risk level, synced and disabled accounts with roles, how
-# privileged access is held (direct, cloud group, synced group), the most common
-# privileged roles, privilege concentration, and synced groups that hold roles.
-# For a -u folder it also summarises the user's groups: type, age, owners, roles held.
+# user-role-summary.sh - turns a user-role-inventory output folder into two files:
+#
+#   user-role-report.md     counts only, no user, group or scope names - safe to put into
+#                           a report: users per risk level, synced and disabled accounts
+#                           with roles, how privileged access is held, the most common
+#                           privileged roles, privilege concentration, synced groups with
+#                           roles; for a -u folder also the user's groups by type, age,
+#                           owners and roles held
+#   user-role-worklist.csv  one row per thing to fix (users and groups), with names,
+#                           details and what to do - internal. item_id (category:object ID)
+#                           stays the same between runs, so the file can feed a tracking
+#                           spreadsheet (Excel: Data > From Text/CSV) and statuses kept
+#                           there survive a refresh.
 #
 # Usage:
-#   ./user-role-summary.sh <output folder>      counts only - safe to paste into a report
-#   ./user-role-summary.sh -n <output folder>   also list users, groups and roles by name
-#                                               (internal use)
+#   ./user-role-summary.sh <output folder>           writes both files into that folder
+#   ./user-role-summary.sh -o <dir> <output folder>  writes them into <dir> instead
+#   ./user-role-summary.sh -s ';' <output folder>    CSV separator (default ","; use ";" if
+#                                                    Excel with a Hungarian or German locale
+#                                                    opens it)
 #
 # Reads raw/model.jsonl, raw/users.jsonl, synced_groups.tsv and (if present)
 # user_groups.tsv from the folder. Needs only jq; no Azure access.
@@ -21,10 +31,12 @@ set -uo pipefail
 
 usage() { awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; }
 
-NAMES=0
-while getopts ":nh" opt; do
+SEP=","
+OUT=""
+while getopts ":s:o:h" opt; do
   case "$opt" in
-    n) NAMES=1 ;;
+    s) SEP="$OPTARG" ;;
+    o) OUT="$OPTARG" ;;
     h) usage; exit 0 ;;
     *) echo "Unknown option. Use -h for help." >&2; exit 2 ;;
   esac
@@ -33,19 +45,24 @@ shift $((OPTIND - 1))
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 (($# == 1)) || die "give one user-role-inventory output folder (-h for help)"
+[[ "$SEP" == "," || "$SEP" == ";" || "$SEP" == $'\t' ]] || die "-s must be , or ; or a tab"
 DIR="$1"
 [[ -f "$DIR/raw/model.jsonl" && -s "$DIR/raw/users.jsonl" && -s "$DIR/synced_groups.tsv" ]] \
   || die "raw/model.jsonl, raw/users.jsonl or synced_groups.tsv not found in $DIR - is this a user-role-inventory output folder?"
 command -v jq >/dev/null || die "jq not found (sudo apt install jq)"
 jq() { command jq "$@" | tr -d '\r'; }   # Windows jq ends lines with CRLF
 
+OUT=${OUT:-$DIR}
+umask 077
+mkdir -p "$OUT" || die "cannot create $OUT"
+DETECTED=$(date -r "$DIR/raw/model.jsonl" +%Y-%m-%d 2>/dev/null || date +%Y-%m-%d)
 UG="$DIR/user_groups.tsv"
 [[ -s "$UG" ]] || UG=/dev/null
 
-jq -n -r --slurpfile m "$DIR/raw/model.jsonl" --slurpfile users "$DIR/raw/users.jsonl" \
-  --rawfile sg "$DIR/synced_groups.tsv" --rawfile ug "$UG" \
-  --argjson names "$NAMES" --arg dir "$DIR" '
+# ---------------------------------------------------------------- shared jq
+read -r -d '' JQ_PRE <<'JQ'
 def risklabel: ["", "LOW", "MEDIUM", "HIGH", "CRITICAL"][.];
+def riskvalue: {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}[.] // 0;
 def cnt(f): map(select(f)) | length;
 def tsv: split("\n") | map(select(length > 0) | split("\t"))
          | if length == 0 then [] else .[0] as $h | [.[1:][] | [$h, .] | transpose | map({key: .[0], value: .[1]}) | from_entries] end;
@@ -58,16 +75,108 @@ def how: if .via == "direct" then "direct"
 def adminname: test("admin|adm\\b|owner|privileged|security|global|contributor|operator"; "i");
 
 ($sg | tsv) as $SG
-| ($ug | tsv) as $UG
+| ($ug | tsv | map(. + {age: ((now - (.created | ts // now)) / 86400)})) as $UG
 | ($UG | length > 0) as $single
 | $m as $M
 | ($M | group_by(.user.id) | map({u: .[0].user, rating: (map(.rating) | max), rows: .,
-                                   priv: (map(select(.rating >= 3) | rlabel) | unique)})) as $U
+                                   priv: (map(select(.rating >= 3) | rlabel) | unique),
+                                   via: (map(select(.rating >= 3) | .via) | unique)})) as $U
+JQ
+
+# ---------------------------------------------------------------- worklist rows
+read -r -d '' JQ_ROWS <<'JQ'
+| def item($sev; $cat; $issue; $action; $details):
+    {sev: $sev, cat: $cat, issue: $issue, action: $action, details: $details};
+  [ ( $U[] | . as $x
+      | ( (if .u.synced and .rating >= 3 then
+             item(.rating; "USR-SYNCED-PRIV"; "Account synced from on-prem AD holds privileged roles";
+               "Move the privileged roles to a cloud-only admin account (PIM-eligible, phishing-resistant MFA) and remove them from this account. On-prem AD controls this account: whoever can reset its password or change its groups there gets these roles.";
+               "")
+           else empty end),
+          (if .u.enabled == false then
+             item(if .rating >= 3 then 3 else 2 end; "USR-DISABLED-ROLES"; "Disabled account still holds roles";
+               "Remove all role assignments, group memberships and ownerships, then delete the account (or move it out of the sync scope) after the retention period.";
+               "")
+           else empty end),
+          (if (.u.synced | not) and .rating == 4 then
+             item(2; "USR-PRIV-REVIEW"; "Cloud-only account with CRITICAL roles";
+               "Confirm the roles are PIM-eligible rather than permanent, the account uses phishing-resistant MFA, and the person still needs them.";
+               "")
+           else empty end),
+          (if (.priv | length) > 5 then
+             item(2; "USR-MANY-PRIV"; "User holds many privileged roles";
+               "Review with the person's manager and remove the privileged roles their current job doesn't need.";
+               "")
+           else empty end)
+        )
+      | . + {kind: "User", x: $x} ),
+    ( $SG[] | select(.risk == "HIGH" or .risk == "CRITICAL") | . as $g
+      | item(.risk | riskvalue; "GRP-SYNCED-PRIV"; "Group synced from on-prem AD holds privileged roles";
+          "Replace it with a cloud-only, role-assignable group (ideally PIM for Groups) and move the role assignments there. Until then, restrict who can change the group in on-prem AD.";
+          "")
+      | . + {kind: "Group", g: {name: $g.group, id: $g.groupId, members: $g.userMembers, roles: $g.roles, synced: "yes"}} ),
+    ( if $single then
+        $users[0] as $t
+        | $UG[] | . as $g
+        | ([$M[] | select(.group.id? == $g.groupId) | .rating] | max // 0) as $gr
+        | ( (if .rolesHeld != "" and .roleAssignable != "yes" and .synced != "yes" then
+               item(2; "GRP-NOT-ROLEASSIGNABLE"; "Group holds roles but isn't role-assignable";
+                 "Its owners, Groups Administrators and User Administrators can change its membership. Use a role-assignable group or a restricted management administrative unit, and review its owners.";
+                 "")
+             else empty end),
+            (if .rolesHeld != "" and .age <= 90 then
+               item(2; "GRP-RECENT-PRIV"; "Group created in the last 90 days holds roles";
+                 "Check in the Entra audit log who created the group and who added its members, and confirm it is legitimate.";
+                 "")
+             else empty end),
+            (if (.group | adminname) and .rolesHeld == "" then
+               item(1; "GRP-ADMIN-NO-ROLE"; "Admin-sounding group with no Entra or Azure role found";
+                 "Check whether it grants rights in Defender XDR, Exchange, Purview or Intune. Remove the user's membership if they don't need it.";
+                 "")
+             else empty end),
+            (if $gr >= 3 then
+               item($gr; "USR-GROUP-MEMBERSHIP"; "User gets privileged roles through this group";
+                 "Confirm the user still needs this membership and remove it if not." + (if .membership == "nested" then " The membership is nested: find the group that brings the user in." else "" end);
+                 "")
+             else empty end)
+          )
+        | . + {kind: "Group", t: $t,
+               g: {name: $g.group, id: $g.groupId, members: "", roles: $g.rolesHeld, synced: $g.synced,
+                   membership: $g.membership, assignable: $g.roleAssignable, type: $g.type, owners: $g.owners,
+                   created: $g.created}}
+      else empty end )
+  ]
+| sort_by(-.sev, .cat, (.x.u.upn // .g.name // ""))
+JQ
+
+# ---------------------------------------------------------------- CSV
+read -r -d '' JQ_CSV <<'JQ'
+def risklabel: ["", "LOW", "MEDIUM", "HIGH", "CRITICAL"][.];
+def yn: if . == true then "yes" elif . == false then "no" else "" end;
+def csvrow: map(if . == null then "" else tostring end
+                | if test("^[=+\\-@\t\r]") then "'" + . else . end   # no formulas in Excel
+                | gsub("\""; "\"\"") | "\"" + . + "\"") | join($sep);
+(["item_id", "severity", "priority", "category", "issue", "action", "kind", "user_upn", "user_name",
+  "user_synced", "user_enabled", "on_prem_account", "privileged_roles", "privileged_role_count", "held_via",
+  "group_name", "group_id", "membership", "group_synced", "role_assignable", "group_type", "group_owners",
+  "group_created", "roles_held", "group_user_members", "details", "detected"] | csvrow),
+($rows[] | (.cat == "USR-GROUP-MEMBERSHIP") as $ug | (.x.u // (if $ug then .t else null end)) as $u
+  | [ (if .x then "\(.cat):\(.x.u.id)" elif $ug then "\(.cat):\(.t.id):\(.g.id)" else "\(.cat):\(.g.id)" end),
+      (.sev | risklabel), (5 - .sev), .cat, .issue, .action, .kind,
+      ($u.upn // ""), ($u.name // ""), ($u.synced | yn), ($u.enabled | yn), ($u.sam // ""),
+      ((.x.priv // []) | join("; ")), (if .x then (.x.priv | length) else "" end), ((.x.via // []) | join("; ")),
+      (.g.name // ""), (.g.id // ""), (.g.membership // ""), (.g.synced // ""), (.g.assignable // ""),
+      (.g.type // ""), (.g.owners // ""), (.g.created // ""), (.g.roles // ""), (.g.members // ""),
+      .details, $detected ]
+  | csvrow)
+JQ
+
+# ---------------------------------------------------------------- report.md
+read -r -d '' JQ_REPORT <<'JQ'
 | ($U | length) as $nu
-| (
-  "# user-role-inventory summary",
+| "# User accounts with Entra ID and Azure roles",
   "",
-  "Source: `\($dir)`. Generated \(now | strftime("%Y-%m-%d %H:%M")) UTC.",
+  "Inventory of \($detected) (user-role-inventory). Counts only.",
   "",
   (if $single then "Mode: **single user** (`-u`)." else "Mode: **whole tenant**. Users read: **\($users | length)**, of which synced from on-prem: **\($users | cnt(.synced))**." end),
   "",
@@ -92,8 +201,9 @@ def adminname: test("admin|adm\\b|owner|privileged|security|global|contributor|o
   "",
   "| Held | Assignments | Of which active | Of which PIM-eligible |",
   "|---|---|---|---|",
-  ( [$M[] | select(.rating >= 3)] | unique_by([.user.id, .src, .role, .scope, .kind, how]) | group_by(how)[]
-    | "| \(.[0] | how) | \(length) | \(cnt(.kind == "active")) | \(cnt(.kind == "eligible")) |" ),
+  ( [$M[] | select(.rating >= 3)] | unique_by([.user.id, .src, .role, .scope, .kind, how])
+    | if length == 0 then "| (none) | | | |" else group_by(how)[]
+      | "| \(.[0] | how) | \(length) | \(cnt(.kind == "active")) | \(cnt(.kind == "eligible")) |" end ),
   "",
   "## Most common privileged roles",
   "",
@@ -120,47 +230,39 @@ def adminname: test("admin|adm\\b|owner|privileged|security|global|contributor|o
   "- Synced groups with roles: **\($SG | length)**; HIGH or CRITICAL: **\($SG | cnt(.risk == "HIGH" or .risk == "CRITICAL"))**",
   ( if ($SG | length) > 0 then
       "", "| Risk | Groups |", "|---|---|",
-      ($SG | group_by(.risk) | sort_by(.[0].risk | ["CRITICAL", "HIGH", "MEDIUM", "LOW"] | index(.))[] | "| \(.[0].risk) | \(length) |")
+      ($SG | group_by(.risk) | sort_by(-(.[0].risk | riskvalue))[] | "| \(.[0].risk) | \(length) |")
     else empty end ),
   ( if $single then
-      ($UG | map(. + {age: ((now - (.created | ts // now)) / 86400)})) as $G
-      | "",
-        "## Groups of the user",
-        "",
-        "- Groups: **\($G | length)** (direct: \($G | cnt(.membership == "direct")), nested: \($G | cnt(.membership == "nested")))",
-        "- Synced from on-prem: **\($G | cnt(.synced == "yes"))**; role-assignable: **\($G | cnt(.roleAssignable == "yes"))**",
-        "- Holding Entra or Azure roles: **\($G | cnt(.rolesHeld != ""))**",
-        "- Holding roles but **not** role-assignable (owners, Groups Administrators and User Administrators can change membership): **\($G | cnt(.rolesHeld != "" and .roleAssignable != "yes"))**",
-        "- Holding roles **and** synced from on-prem: **\($G | cnt(.rolesHeld != "" and .synced == "yes"))**",
-        "- With owners: **\($G | cnt(.owners != ""))**",
-        "- Admin-sounding name but no Entra or Azure role found (check workload RBAC: Defender XDR, Exchange, Purview, Intune): **\($G | cnt((.group | adminname) and .rolesHeld == ""))**",
-        "- Created in the last 30 days: **\($G | cnt(.age <= 30))**, 90 days: **\($G | cnt(.age <= 90))**, 365 days: **\($G | cnt(.age <= 365))**",
-        "",
-        "| Group type | Groups |", "|---|---|",
-        ($G | group_by(.type)[] | "| \(.[0].type) | \(length) |")
+      "",
+      "## Groups of the user",
+      "",
+      "- Groups: **\($UG | length)** (direct: \($UG | cnt(.membership == "direct")), nested: \($UG | cnt(.membership == "nested")))",
+      "- Synced from on-prem: **\($UG | cnt(.synced == "yes"))**; role-assignable: **\($UG | cnt(.roleAssignable == "yes"))**",
+      "- Holding Entra or Azure roles: **\($UG | cnt(.rolesHeld != ""))**",
+      "- Holding roles but **not** role-assignable (owners, Groups Administrators and User Administrators can change membership): **\($UG | cnt(.rolesHeld != "" and .roleAssignable != "yes"))**",
+      "- Holding roles **and** synced from on-prem: **\($UG | cnt(.rolesHeld != "" and .synced == "yes"))**",
+      "- With owners: **\($UG | cnt(.owners != ""))**",
+      "- Admin-sounding name but no Entra or Azure role found (check workload RBAC: Defender XDR, Exchange, Purview, Intune): **\($UG | cnt((.group | adminname) and .rolesHeld == ""))**",
+      "- Created in the last 30 days: **\($UG | cnt(.age <= 30))**, 90 days: **\($UG | cnt(.age <= 90))**, 365 days: **\($UG | cnt(.age <= 365))**",
+      "",
+      "| Group type | Groups |", "|---|---|",
+      ($UG | group_by(.type)[] | "| \(.[0].type) | \(length) |")
     else empty end ),
-  ( if $names == 1 then
-      "",
-      "## Users with CRITICAL roles, and synced or disabled users with HIGH roles (internal - contains names)",
-      "",
-      "| Risk | User | Synced | Enabled | Privileged roles |",
-      "|---|---|---|---|---|",
-      ( $U | map(select(.rating == 4 or (.rating == 3 and (.u.synced or .u.enabled == false))))
-        | sort_by(-.rating, (if .u.synced then 0 else 1 end), .u.upn)[]
-        | "| \(.rating | risklabel) | \(.u.upn) | \(if .u.synced then "yes" else "no" end) | \(if .u.enabled == false then "no" else "yes" end) | \(.priv | join("; ")) |" ),
-      "",
-      "## Synced groups that hold roles (internal - contains names)",
-      "",
-      "| Risk | Group | User members | Roles |", "|---|---|---|---|",
-      ( $SG[] | "| \(.risk) | \(.group) | \(.userMembers) | \(.roles) |" ),
-      ( if $single then
-          "",
-          "## Groups of the user that hold roles or have admin-sounding names (internal - contains names)",
-          "",
-          "| Created | Group | Membership | Synced | Role-assignable | Owners | Roles held |",
-          "|---|---|---|---|---|---|---|",
-          ( $UG[] | select(.rolesHeld != "" or (.group | adminname))
-            | "| \(.created) | \(.group) | \(.membership) | \(.synced) | \(.roleAssignable) | \(.owners) | \(.rolesHeld) |" )
-        else empty end )
-    else empty end )
-)'
+  "",
+  "## Worklist",
+  "",
+  "| Severity | Items |", "|---|---|",
+  ($items | map(.sev) | group_by(.) | reverse
+   | if length == 0 then "| (none) | |" else .[] | "| \(.[0] | risklabel) | \(length) |" end)
+JQ
+
+ARGS=(--slurpfile m "$DIR/raw/model.jsonl" --slurpfile users "$DIR/raw/users.jsonl"
+      --rawfile sg "$DIR/synced_groups.tsv" --rawfile ug "$UG" --arg detected "$DETECTED")
+ITEMS=$(jq -n -c "${ARGS[@]}" "$JQ_PRE $JQ_ROWS") || die "building the worklist failed"
+{ printf '\xEF\xBB\xBF'; jq -n -r --argjson rows "$ITEMS" --arg sep "$SEP" --arg detected "$DETECTED" "$JQ_CSV"; } \
+  > "$OUT/user-role-worklist.csv" || die "writing user-role-worklist.csv failed"
+jq -n -r "${ARGS[@]}" --argjson items "$ITEMS" "$JQ_PRE $JQ_REPORT" > "$OUT/user-role-report.md" \
+  || die "building user-role-report.md failed"
+
+printf 'user-role-report.md     %s  (counts only - safe for the report)\n' "$OUT/user-role-report.md" >&2
+printf 'user-role-worklist.csv  %s  (%s items, with names - internal)\n' "$OUT/user-role-worklist.csv" "$(jq -r 'length' <<<"$ITEMS")" >&2
