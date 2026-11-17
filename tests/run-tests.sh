@@ -115,6 +115,10 @@ echo "argument checks"
 if ! bash "$SCRIPT" -u 'bad user;' >/dev/null 2>&1; then ok "rejects a malformed user"; else bad "rejects a malformed user"; fi
 if bash "$SCRIPT" -h | grep -q "READ-ONLY inventory"; then ok "-h prints help"; else bad "-h prints help"; fi
 
+echo "portability"
+if ! (cd "$HERE/.." && grep -nE '(fromdateiso8601|fromdate|strptime|mktime|strftime|todate|dateadd)\b' user-role-inventory.sh user-role-summary.sh | grep -v '^[^:]*:[0-9]*:[[:space:]]*#'); then
+  ok "no jq date built-ins (missing in some Windows jq builds)"
+else bad "no jq date built-ins (missing in some Windows jq builds)"; fi
 echo
 echo "$pass passed, $fail failed"
 ((fail == 0))
